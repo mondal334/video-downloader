@@ -1,177 +1,117 @@
-"""Rich text and beautiful formatting in the terminal."""
+"""
+pip._vendor is for vendoring dependencies of pip to prevent needing pip to
+depend on something external.
 
-import os
-from typing import IO, TYPE_CHECKING, Any, Callable, Optional, Union
+Files inside of pip._vendor should be considered immutable and should only be
+updated to versions from upstream.
+"""
+from __future__ import absolute_import
 
-from ._extension import load_ipython_extension  # noqa: F401
+import glob
+import os.path
+import sys
 
-__all__ = ["get_console", "reconfigure", "print", "inspect", "print_json"]
+# Downstream redistributors which have debundled our dependencies should also
+# patch this value to be true. This will trigger the additional patching
+# to cause things like "six" to be available as pip.
+DEBUNDLED = False
 
-if TYPE_CHECKING:
-    from .console import Console
-
-# Global console used by alternative print
-_console: Optional["Console"] = None
-
-try:
-    _IMPORT_CWD = os.path.abspath(os.getcwd())
-except FileNotFoundError:
-    # Can happen if the cwd has been deleted
-    _IMPORT_CWD = ""
-
-
-def get_console() -> "Console":
-    """Get a global :class:`~rich.console.Console` instance. This function is used when Rich requires a Console,
-    and hasn't been explicitly given one.
-
-    Returns:
-        Console: A console instance.
-    """
-    global _console
-    if _console is None:
-        from .console import Console
-
-        _console = Console()
-
-    return _console
+# By default, look in this directory for a bunch of .whl files which we will
+# add to the beginning of sys.path before attempting to import anything. This
+# is done to support downstream re-distributors like Debian and Fedora who
+# wish to create their own Wheels for our dependencies to aid in debundling.
+WHEEL_DIR = os.path.abspath(os.path.dirname(__file__))
 
 
-def reconfigure(*args: Any, **kwargs: Any) -> None:
-    """Reconfigures the global console by replacing it with another.
+# Define a small helper function to alias our vendored modules to the real ones
+# if the vendored ones do not exist. This idea of this was taken from
+# https://github.com/kennethreitz/requests/pull/2567.
+def vendored(modulename):
+    vendored_name = "{0}.{1}".format(__name__, modulename)
 
-    Args:
-        *args (Any): Positional arguments for the replacement :class:`~rich.console.Console`.
-        **kwargs (Any): Keyword arguments for the replacement :class:`~rich.console.Console`.
-    """
-    from pip._vendor.rich.console import Console
-
-    new_console = Console(*args, **kwargs)
-    _console = get_console()
-    _console.__dict__ = new_console.__dict__
-
-
-def print(
-    *objects: Any,
-    sep: str = " ",
-    end: str = "\n",
-    file: Optional[IO[str]] = None,
-    flush: bool = False,
-) -> None:
-    r"""Print object(s) supplied via positional arguments.
-    This function has an identical signature to the built-in print.
-    For more advanced features, see the :class:`~rich.console.Console` class.
-
-    Args:
-        sep (str, optional): Separator between printed objects. Defaults to " ".
-        end (str, optional): Character to write at end of output. Defaults to "\\n".
-        file (IO[str], optional): File to write to, or None for stdout. Defaults to None.
-        flush (bool, optional): Has no effect as Rich always flushes output. Defaults to False.
-
-    """
-    from .console import Console
-
-    write_console = get_console() if file is None else Console(file=file)
-    return write_console.print(*objects, sep=sep, end=end)
+    try:
+        __import__(modulename, globals(), locals(), level=0)
+    except ImportError:
+        # We can just silently allow import failures to pass here. If we
+        # got to this point it means that ``import pip._vendor.whatever``
+        # failed and so did ``import whatever``. Since we're importing this
+        # upfront in an attempt to alias imports, not erroring here will
+        # just mean we get a regular import error whenever pip *actually*
+        # tries to import one of these modules to use it, which actually
+        # gives us a better error message than we would have otherwise
+        # gotten.
+        pass
+    else:
+        sys.modules[vendored_name] = sys.modules[modulename]
+        base, head = vendored_name.rsplit(".", 1)
+        setattr(sys.modules[base], head, sys.modules[modulename])
 
 
-def print_json(
-    json: Optional[str] = None,
-    *,
-    data: Any = None,
-    indent: Union[None, int, str] = 2,
-    highlight: bool = True,
-    skip_keys: bool = False,
-    ensure_ascii: bool = False,
-    check_circular: bool = True,
-    allow_nan: bool = True,
-    default: Optional[Callable[[Any], Any]] = None,
-    sort_keys: bool = False,
-) -> None:
-    """Pretty prints JSON. Output will be valid JSON.
+# If we're operating in a debundled setup, then we want to go ahead and trigger
+# the aliasing of our vendored libraries as well as looking for wheels to add
+# to our sys.path. This will cause all of this code to be a no-op typically
+# however downstream redistributors can enable it in a consistent way across
+# all platforms.
+if DEBUNDLED:
+    # Actually look inside of WHEEL_DIR to find .whl files and add them to the
+    # front of our sys.path.
+    sys.path[:] = glob.glob(os.path.join(WHEEL_DIR, "*.whl")) + sys.path
 
-    Args:
-        json (str): A string containing JSON.
-        data (Any): If json is not supplied, then encode this data.
-        indent (int, optional): Number of spaces to indent. Defaults to 2.
-        highlight (bool, optional): Enable highlighting of output: Defaults to True.
-        skip_keys (bool, optional): Skip keys not of a basic type. Defaults to False.
-        ensure_ascii (bool, optional): Escape all non-ascii characters. Defaults to False.
-        check_circular (bool, optional): Check for circular references. Defaults to True.
-        allow_nan (bool, optional): Allow NaN and Infinity values. Defaults to True.
-        default (Callable, optional): A callable that converts values that can not be encoded
-            in to something that can be JSON encoded. Defaults to None.
-        sort_keys (bool, optional): Sort dictionary keys. Defaults to False.
-    """
-
-    get_console().print_json(
-        json,
-        data=data,
-        indent=indent,
-        highlight=highlight,
-        skip_keys=skip_keys,
-        ensure_ascii=ensure_ascii,
-        check_circular=check_circular,
-        allow_nan=allow_nan,
-        default=default,
-        sort_keys=sort_keys,
-    )
-
-
-def inspect(
-    obj: Any,
-    *,
-    console: Optional["Console"] = None,
-    title: Optional[str] = None,
-    help: bool = False,
-    methods: bool = False,
-    docs: bool = True,
-    private: bool = False,
-    dunder: bool = False,
-    sort: bool = True,
-    all: bool = False,
-    value: bool = True,
-) -> None:
-    """Inspect any Python object.
-
-    * inspect(<OBJECT>) to see summarized info.
-    * inspect(<OBJECT>, methods=True) to see methods.
-    * inspect(<OBJECT>, help=True) to see full (non-abbreviated) help.
-    * inspect(<OBJECT>, private=True) to see private attributes (single underscore).
-    * inspect(<OBJECT>, dunder=True) to see attributes beginning with double underscore.
-    * inspect(<OBJECT>, all=True) to see all attributes.
-
-    Args:
-        obj (Any): An object to inspect.
-        title (str, optional): Title to display over inspect result, or None use type. Defaults to None.
-        help (bool, optional): Show full help text rather than just first paragraph. Defaults to False.
-        methods (bool, optional): Enable inspection of callables. Defaults to False.
-        docs (bool, optional): Also render doc strings. Defaults to True.
-        private (bool, optional): Show private attributes (beginning with underscore). Defaults to False.
-        dunder (bool, optional): Show attributes starting with double underscore. Defaults to False.
-        sort (bool, optional): Sort attributes alphabetically. Defaults to True.
-        all (bool, optional): Show all attributes. Defaults to False.
-        value (bool, optional): Pretty print value. Defaults to True.
-    """
-    _console = console or get_console()
-    from pip._vendor.rich._inspect import Inspect
-
-    # Special case for inspect(inspect)
-    is_inspect = obj is inspect
-
-    _inspect = Inspect(
-        obj,
-        title=title,
-        help=is_inspect or help,
-        methods=is_inspect or methods,
-        docs=is_inspect or docs,
-        private=private,
-        dunder=dunder,
-        sort=sort,
-        all=all,
-        value=value,
-    )
-    _console.print(_inspect)
-
-
-if __name__ == "__main__":  # pragma: no cover
-    print("Hello, **World**")
+    # Actually alias all of our vendored dependencies.
+    vendored("cachecontrol")
+    vendored("certifi")
+    vendored("dependency-groups")
+    vendored("distlib")
+    vendored("distro")
+    vendored("packaging")
+    vendored("packaging.version")
+    vendored("packaging.specifiers")
+    vendored("pkg_resources")
+    vendored("platformdirs")
+    vendored("progress")
+    vendored("pyproject_hooks")
+    vendored("requests")
+    vendored("requests.exceptions")
+    vendored("requests.packages")
+    vendored("requests.packages.urllib3")
+    vendored("requests.packages.urllib3._collections")
+    vendored("requests.packages.urllib3.connection")
+    vendored("requests.packages.urllib3.connectionpool")
+    vendored("requests.packages.urllib3.contrib")
+    vendored("requests.packages.urllib3.contrib.ntlmpool")
+    vendored("requests.packages.urllib3.contrib.pyopenssl")
+    vendored("requests.packages.urllib3.exceptions")
+    vendored("requests.packages.urllib3.fields")
+    vendored("requests.packages.urllib3.filepost")
+    vendored("requests.packages.urllib3.packages")
+    vendored("requests.packages.urllib3.packages.ordered_dict")
+    vendored("requests.packages.urllib3.packages.six")
+    vendored("requests.packages.urllib3.packages.ssl_match_hostname")
+    vendored("requests.packages.urllib3.packages.ssl_match_hostname."
+             "_implementation")
+    vendored("requests.packages.urllib3.poolmanager")
+    vendored("requests.packages.urllib3.request")
+    vendored("requests.packages.urllib3.response")
+    vendored("requests.packages.urllib3.util")
+    vendored("requests.packages.urllib3.util.connection")
+    vendored("requests.packages.urllib3.util.request")
+    vendored("requests.packages.urllib3.util.response")
+    vendored("requests.packages.urllib3.util.retry")
+    vendored("requests.packages.urllib3.util.ssl_")
+    vendored("requests.packages.urllib3.util.timeout")
+    vendored("requests.packages.urllib3.util.url")
+    vendored("resolvelib")
+    vendored("rich")
+    vendored("rich.console")
+    vendored("rich.highlighter")
+    vendored("rich.logging")
+    vendored("rich.markup")
+    vendored("rich.progress")
+    vendored("rich.segment")
+    vendored("rich.style")
+    vendored("rich.text")
+    vendored("rich.traceback")
+    if sys.version_info < (3, 11):
+        vendored("tomli")
+    vendored("truststore")
+    vendored("urllib3")
